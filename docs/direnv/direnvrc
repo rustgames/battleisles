@@ -1,0 +1,76 @@
+# Shared direnv helpers. Copy to ~/.config/direnv/direnvrc on every machine:
+#
+#   mkdir -p ~/.config/direnv && cp docs/direnv/direnvrc ~/.config/direnv/direnvrc
+#
+# Both helpers are meant to be called from a per-directory .envrc that is never
+# committed. They never abort the shell: on failure they print a one-line hint
+# and leave the variable unset. See docs/secrets-setup.md.
+
+# Default vault; override per call with the third argument or by exporting
+# KV_VAULT before the call.
+: "${KV_VAULT:=gosandcovault}"
+
+# Seconds a fetched secret stays in the per-user cache (8 hours).
+: "${KV_CACHE_TTL:=28800}"
+
+# kv_export VAR SECRET_NAME [VAULT]
+#
+# Fetch SECRET_NAME from Azure Key Vault with the current `az login` session
+# and export it as VAR. Cached under $XDG_RUNTIME_DIR/kv (tmpfs on Linux) or
+# $TMPDIR/kv (macOS), mode 600, so directory entry is instant after the first
+# fetch. Wipe the cache after rotating: rm -rf "${XDG_RUNTIME_DIR:-$TMPDIR}/kv"
+kv_export() {
+  local var="$1" name="$2" vault="${3:-$KV_VAULT}"
+  if [[ -z "$var" || -z "$name" ]]; then
+    log_error "kv_export: usage: kv_export VAR SECRET_NAME [VAULT]"
+    return 0
+  fi
+  if ! has az; then
+    log_error "kv_export: az CLI not installed; $var not set"
+    return 0
+  fi
+
+  local base="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/kv"
+  local dir="$base/$vault"
+  local file="$dir/$name"
+  local value=""
+
+  if [[ -f "$file" ]]; then
+    local age=$(( $(date +%s) - $(stat -c %Y "$file" 2>/dev/null || stat -f %m "$file") ))
+    if (( age < KV_CACHE_TTL )); then
+      value="$(<"$file")"
+    fi
+  fi
+
+  if [[ -z "$value" ]]; then
+    value="$(az keyvault secret show --vault-name "$vault" --name "$name" \
+      --query value -o tsv 2>/dev/null)" || value=""
+    if [[ -z "$value" ]]; then
+      log_error "kv_export: could not read '$name' from vault '$vault' (run 'az login'?); $var not set"
+      return 0
+    fi
+    mkdir -p "$dir" && chmod 700 "$base" "$dir"
+    (umask 077 && printf '%s' "$value" > "$file")
+  fi
+
+  export "$var=$value"
+}
+
+# gh_token_export [VAR]
+#
+# Export the GitHub CLI's OAuth token (default variable name GH_TOKEN) for
+# tools that read it from the environment. Requires `gh auth login` once.
+gh_token_export() {
+  local var="${1:-GH_TOKEN}"
+  if ! has gh; then
+    log_error "gh_token_export: gh CLI not installed; $var not set"
+    return 0
+  fi
+  local token
+  token="$(gh auth token 2>/dev/null)" || token=""
+  if [[ -z "$token" ]]; then
+    log_error "gh_token_export: gh is not logged in (run 'gh auth login'); $var not set"
+    return 0
+  fi
+  export "$var=$token"
+}

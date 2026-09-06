@@ -18,5 +18,7 @@ If you want wasm support:
     
     - run 'trunk serve'
 
+Secrets and per-project environment variables: see [docs/secrets-setup.md](docs/secrets-setup.md).
+
 If you want to use a codespace, everything should be ready in .devcontainer
 
